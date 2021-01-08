@@ -20,28 +20,28 @@ import requests
 
 import zaza.model
 from zaza.openstack.charm_tests.keystone import BaseKeystoneTest
-import zaza.charm_lifecycle.utils as lifecycle_utils
 import zaza.openstack.utilities.openstack as openstack_utils
 
 
 class FailedToReachIDP(Exception):
     """Custom Exception for failing to reach the IDP."""
 
-    pass
 
-
-class CharmKeystoneSAMLMellonTest(BaseKeystoneTest):
+class BaseCharmKeystoneSAMLMellonTest(BaseKeystoneTest):
     """Charm Keystone SAML Mellon tests."""
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls,
+                   application_name="keystone-saml-mellon",
+                   test_saml_idp_app_name="test-saml-idp",
+                   horizon_idp_option_name="myidp_mapped",
+                   horizon_idp_display_name="myidp via mapped"):
         """Run class setup for running Keystone SAML Mellon charm tests."""
-        super(CharmKeystoneSAMLMellonTest, cls).setUpClass()
-        # Note: The BaseKeystoneTest class sets the application_name to
-        # "keystone" which breaks keystone-saml-mellon actions. Explicitly set
-        # application name here.
-        cls.test_config = lifecycle_utils.get_charm_config()
-        cls.application_name = cls.test_config['charm_name']
+        super(BaseCharmKeystoneSAMLMellonTest, cls).setUpClass()
+        cls.application_name = application_name
+        cls.test_saml_idp_app_name = test_saml_idp_app_name
+        cls.horizon_idp_option_name = horizon_idp_option_name
+        cls.horizon_idp_display_name = horizon_idp_display_name
         cls.action = "get-sp-metadata"
         cls.current_release = openstack_utils.get_os_release()
         cls.FOCAL_USSURI = openstack_utils.get_os_release("focal_ussuri")
@@ -82,8 +82,8 @@ class CharmKeystoneSAMLMellonTest(BaseKeystoneTest):
             keystone_ip = unit.public_address
 
         horizon = "openstack-dashboard"
-        horizon_vip = (zaza.model.get_application_config(horizon)
-                       .get("vip").get("value"))
+        horizon_config = zaza.model.get_application_config(horizon)
+        horizon_vip = horizon_config.get("vip").get("value")
         if horizon_vip:
             horizon_ip = horizon_vip
         else:
@@ -101,17 +101,22 @@ class CharmKeystoneSAMLMellonTest(BaseKeystoneTest):
         else:
             region = "default"
 
+        idp_address = zaza.model.get_units(
+            self.test_saml_idp_app_name).pop().data['public-address']
+
         url = "{}://{}/horizon/auth/login/".format(proto, horizon_ip)
-        horizon_expect = ('<option value="samltest_mapped">'
-                          'samltest.id</option>')
+        horizon_expect = '<option value="{0}">{1}</option>'.format(
+            self.horizon_idp_option_name, self.horizon_idp_display_name)
 
-        # This is the message samltest.id gives when it has not had
-        # SP XML uploaded. It still shows we have been directed to:
-        # horizon -> keystone -> samltest.id
-        idp_expect = ("The application you have accessed is not registered "
-                      "for use with this service.")
+        # This is the message the local test-saml-idp displays after you are
+        # redirected. It shows we have been directed to:
+        # horizon -> keystone -> test-saml-idp
+        idp_expect = (
+            "A service has requested you to authenticate yourself. Please "
+            "enter your username and password in the form below.")
 
-        def _do_redirect_check(url, region, idp_expect, horizon_expect):
+        def _do_redirect_check(url, region, idp_expect,
+                               horizon_expect, idp_address):
 
             # start session, get csrftoken
             client = requests.session()
@@ -129,15 +134,13 @@ class CharmKeystoneSAMLMellonTest(BaseKeystoneTest):
 
             # Build and send post request
             form_data = {
-                "auth_type": "samltest_mapped",
+                "auth_type": self.horizon_idp_option_name,
                 "csrfmiddlewaretoken": csrftoken,
                 "next": "/horizon/project/api_access",
                 "region": region,
             }
 
             # Verify=False due to CA certificate bundles.
-            # If we point to the CA for keystone/horizon they work but
-            # samltest.id does not.
             # If we don't set it validation fails for keystone/horizon
             # We would have to install the keystone CA onto the system
             # to validate end to end.
@@ -152,7 +155,47 @@ class CharmKeystoneSAMLMellonTest(BaseKeystoneTest):
                 # Raise a custom exception.
                 raise FailedToReachIDP(msg)
 
+            idp_url = ("http://{0}/simplesaml/"
+                       "module.php/core/loginuserpass.php").format(idp_address)
+
+            # Validate that we were redirected to the proper IdP
+            assert response.url.startswith(idp_url)
+            assert idp_url in response.text
+
         # Execute the check
         # We may need to try/except to allow horizon to build its pages
-        _do_redirect_check(url, region, idp_expect, horizon_expect)
+        _do_redirect_check(url, region, idp_expect,
+                           horizon_expect, idp_address)
         logging.info("SUCCESS")
+
+
+class CharmKeystoneSAMLMellonIDP1Test(BaseCharmKeystoneSAMLMellonTest):
+    """Charm Keystone SAML Mellon tests class for the local IDP #1."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Run class setup for running Keystone SAML Mellon charm tests.
+
+        It does the necessary setup for the local IDP #1.
+        """
+        super(CharmKeystoneSAMLMellonIDP1Test, cls).setUpClass(
+            application_name="keystone-saml-mellon1",
+            test_saml_idp_app_name="test-saml-idp1",
+            horizon_idp_option_name="test-saml-idp1_mapped",
+            horizon_idp_display_name="Test SAML IDP #1")
+
+
+class CharmKeystoneSAMLMellonIDP2Test(BaseCharmKeystoneSAMLMellonTest):
+    """Charm Keystone SAML Mellon tests class for the local IDP #2."""
+
+    @classmethod
+    def setUpClass(cls):
+        """Run class setup for running Keystone SAML Mellon charm tests.
+
+        It does the necessary setup for the local IDP #2.
+        """
+        super(CharmKeystoneSAMLMellonIDP2Test, cls).setUpClass(
+            application_name="keystone-saml-mellon2",
+            test_saml_idp_app_name="test-saml-idp2",
+            horizon_idp_option_name="test-saml-idp2_mapped",
+            horizon_idp_display_name="Test SAML IDP #2")
